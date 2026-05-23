@@ -1,0 +1,162 @@
+const express = require('express');
+const router = express.Router();
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+const pool = require('../config/db');
+const { authenticateToken, requireRole } = require('../middleware/auth');
+const auditLog = require('../utils/auditLog');
+
+router.get('/', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, name, username, role, department_id, created_at FROM users ORDER BY created_at DESC');
+    res.json({ users: rows });
+  } catch (err) {
+    console.error('获取用户列表错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+router.post('/', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const { name, username, password, role, department_id } = req.body;
+
+    if (!name || !username || !password || !role) {
+      return res.status(400).json({ error: '请填写必要字段' });
+    }
+
+    const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
+    if (existing.length > 0) {
+      return res.status(400).json({ error: '用户名已存在' });
+    }
+
+    const id = uuidv4();
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await pool.query(
+      'INSERT INTO users (id, name, username, password, role, department_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, name, username, hashedPassword, role, department_id || null]
+    );
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'create_user',
+      target_type: 'user',
+      target_id: id,
+      details: { name, username, role },
+      ip_address: req.ip
+    });
+
+    res.status(201).json({ message: '用户创建成功', user: { id, name, username, role, department_id } });
+  } catch (err) {
+    console.error('创建用户错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+router.put('/:id', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const { name, role, department_id } = req.body;
+    const userId = req.params.id;
+
+    const [existing] = await pool.query('SELECT id FROM users WHERE id = ?', [userId]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+
+    await pool.query(
+      'UPDATE users SET name = ?, role = ?, department_id = ? WHERE id = ?',
+      [name, role, department_id || null, userId]
+    );
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'update_user',
+      target_type: 'user',
+      target_id: userId,
+      details: { name, role, department_id },
+      ip_address: req.ip
+    });
+
+    res.json({ message: '用户更新成功' });
+  } catch (err) {
+    console.error('更新用户错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+router.put('/:id/role', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const { role } = req.body;
+    const userId = req.params.id;
+
+    if (!role) {
+      return res.status(400).json({ error: '请指定角色' });
+    }
+
+    await pool.query('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'change_role',
+      target_type: 'user',
+      target_id: userId,
+      details: { role },
+      ip_address: req.ip
+    });
+
+    res.json({ message: '角色修改成功' });
+  } catch (err) {
+    console.error('修改角色错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+router.put('/:id/department', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const { department_id } = req.body;
+    const userId = req.params.id;
+
+    await pool.query('UPDATE users SET department_id = ? WHERE id = ?', [department_id || null, userId]);
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'change_department',
+      target_type: 'user',
+      target_id: userId,
+      details: { department_id },
+      ip_address: req.ip
+    });
+
+    res.json({ message: '部门修改成功' });
+  } catch (err) {
+    console.error('修改部门错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+router.delete('/:id', authenticateToken, requireRole('secretary'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    if (userId === req.user.id) {
+      return res.status(400).json({ error: '不能删除自己' });
+    }
+
+    await pool.query('DELETE FROM users WHERE id = ?', [userId]);
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'delete_user',
+      target_type: 'user',
+      target_id: userId,
+      ip_address: req.ip
+    });
+
+    res.json({ message: '用户删除成功' });
+  } catch (err) {
+    console.error('删除用户错误：', err);
+    res.status(500).json({ error: '服务器错误' });
+  }
+});
+
+module.exports = router;
