@@ -7,8 +7,13 @@ const multer = require('multer');
 const pool = require('../config/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const auditLog = require('../utils/auditLog');
+const { normalizeOriginalName } = require('../utils/fileName');
+const { getAssignedUsers } = require('../utils/assignment');
 
 const ALLOWED_EXTENSIONS = /\.(doc|docx|pdf|xls|xlsx|ppt|pptx|txt|csv|jpg|jpeg|png|gif|zip|rar)$/i;
+const COMMITTEE_ROLES = ['secretary', 'viceSecretary'];
+const DEPARTMENT_REVIEW_ROLES = ['minister', 'viceMinister'];
+const DEPARTMENT_VIEW_ROLES = ['minister', 'viceMinister', 'member'];
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -26,18 +31,47 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10485760 },
+  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 10485760 },
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_EXTENSIONS.test(path.extname(file.originalname))) {
-      return cb(new Error('不支持的文件类型'));
+      return cb(new Error('Unsupported file type'));
     }
     cb(null, true);
   }
 });
 
+function isCommittee(user) {
+  return COMMITTEE_ROLES.includes(user.role);
+}
+
+function canViewSubmission(user, file) {
+  if (isCommittee(user)) return true;
+  if (file.submitted_by === user.id) return true;
+  return DEPARTMENT_VIEW_ROLES.includes(user.role) && user.department_id && user.department_id === file.department_id;
+}
+
+function canReviewSubmission(user, file) {
+  if (isCommittee(user)) return true;
+  return DEPARTMENT_REVIEW_ROLES.includes(user.role) && user.department_id && user.department_id === file.department_id;
+}
+
+function applyVisibilityFilter(query, params, user) {
+  if (isCommittee(user)) return query;
+  if (user.role === 'branchSecretary') {
+    params.push(user.id);
+    return `${query} AND fs.submitted_by = ?`;
+  }
+  if (DEPARTMENT_VIEW_ROLES.includes(user.role) && user.department_id) {
+    params.push(user.department_id);
+    return `${query} AND fs.department_id = ?`;
+  }
+  params.push('__no_access__');
+  return `${query} AND fs.id = ?`;
+}
+
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { task_id, status } = req.query;
+    const { task_id, taskId, status } = req.query;
     let query = `
       SELECT fs.*, t.title as task_title, d.name as department_name
       FROM file_submissions fs
@@ -46,10 +80,11 @@ router.get('/', authenticateToken, async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
+    const requestedTaskId = task_id || taskId;
 
-    if (task_id) {
+    if (requestedTaskId) {
       query += ' AND fs.task_id = ?';
-      params.push(task_id);
+      params.push(requestedTaskId);
     }
 
     if (status) {
@@ -57,43 +92,50 @@ router.get('/', authenticateToken, async (req, res) => {
       params.push(status);
     }
 
-    if (req.user.role === 'branchSecretary') {
-      query += ' AND fs.submitted_by = ?';
-      params.push(req.user.id);
-    }
-
+    query = applyVisibilityFilter(query, params, req.user);
     query += ' ORDER BY fs.submitted_at DESC';
 
     const [rows] = await pool.query(query, params);
     res.json({ files: rows });
   } catch (err) {
-    console.error('获取文件列表错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Get files error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.post('/', authenticateToken, requireRole('branchSecretary'), upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: '请选择文件' });
+      return res.status(400).json({ error: 'Please choose a file' });
     }
 
-    const { task_id } = req.body;
-    if (!task_id) {
-      return res.status(400).json({ error: '请选择关联任务' });
+    const taskId = req.body.task_id || req.body.taskId;
+    if (!taskId) {
+      return res.status(400).json({ error: 'Please choose a task' });
+    }
+
+    const [taskRows] = await pool.query('SELECT id, department_id, assigned_to FROM tasks WHERE id = ?', [taskId]);
+    if (taskRows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const assignedUsers = await getAssignedUsers(pool, taskRows[0].assigned_to);
+    if (!assignedUsers.some(user => user.id === req.user.id)) {
+      return res.status(403).json({ error: 'This task is not assigned to you' });
     }
 
     const id = uuidv4();
+    const departmentId = taskRows[0].department_id || req.user.department_id;
+    const originalName = normalizeOriginalName(req.file.originalname);
     await pool.query(
       'INSERT INTO file_submissions (id, task_id, file_name, file_path, file_size, submitted_by, submitted_by_name, department_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
-        id, task_id, req.file.originalname, req.file.path, req.file.size,
-        req.user.id, req.user.name, req.user.department_id, 'pending'
+        id, taskId, originalName, req.file.path, req.file.size,
+        req.user.id, req.user.name, departmentId, 'pending'
       ]
     );
 
-    const [taskRows] = await pool.query('SELECT department_id FROM tasks WHERE id = ?', [task_id]);
-    if (taskRows.length > 0 && taskRows[0].department_id) {
+    if (taskRows[0].department_id) {
       const [leaders] = await pool.query(
         'SELECT id FROM users WHERE department_id = ? AND role IN (?, ?)',
         [taskRows[0].department_id, 'minister', 'viceMinister']
@@ -101,7 +143,7 @@ router.post('/', authenticateToken, requireRole('branchSecretary'), upload.singl
       for (const leader of leaders) {
         await pool.query(
           'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-          [uuidv4(), 'file', '新文件提交', `${req.user.name} 提交了文件：${req.file.originalname}`, leader.id]
+          [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, leader.id]
         );
       }
     }
@@ -110,7 +152,7 @@ router.post('/', authenticateToken, requireRole('branchSecretary'), upload.singl
     for (const sec of secretaries) {
       await pool.query(
         'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', '新文件提交', `${req.user.name} 提交了文件：${req.file.originalname}`, sec.id]
+        [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, sec.id]
       );
     }
 
@@ -119,14 +161,14 @@ router.post('/', authenticateToken, requireRole('branchSecretary'), upload.singl
       action: 'submit_file',
       target_type: 'file',
       target_id: id,
-      details: { file_name: req.file.originalname, task_id },
+      details: { file_name: originalName, task_id: taskId },
       ip_address: req.ip
     });
 
-    res.status(201).json({ message: '文件提交成功', file: { id, file_name: req.file.originalname } });
+    res.status(201).json({ message: 'File submitted successfully', file: { id, file_name: originalName } });
   } catch (err) {
-    console.error('文件提交错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Submit file error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -134,14 +176,16 @@ router.get('/:id/download', authenticateToken, async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM file_submissions WHERE id = ?', [req.params.id]);
     if (rows.length === 0) {
-      return res.status(404).json({ error: '文件不存在' });
+      return res.status(404).json({ error: 'File not found' });
     }
 
     const file = rows[0];
-    const filePath = file.file_path;
+    if (!canViewSubmission(req.user, file)) {
+      return res.status(403).json({ error: 'No permission to access this file' });
+    }
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: '文件已丢失' });
+    if (!fs.existsSync(file.file_path)) {
+      return res.status(404).json({ error: 'File is missing' });
     }
 
     await auditLog({
@@ -152,29 +196,32 @@ router.get('/:id/download', authenticateToken, async (req, res) => {
       ip_address: req.ip
     });
 
-    res.download(filePath, file.file_name);
+    res.download(file.file_path, file.file_name);
   } catch (err) {
-    console.error('文件下载错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Download file error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-router.put('/:id/approve', authenticateToken, requireRole('secretary', 'viceSecretary', 'minister'), async (req, res) => {
+router.put('/:id/approve', authenticateToken, requireRole('secretary', 'viceSecretary', 'minister', 'viceMinister'), async (req, res) => {
   try {
     const fileId = req.params.id;
-
     const [rows] = await pool.query('SELECT * FROM file_submissions WHERE id = ?', [fileId]);
     if (rows.length === 0) {
-      return res.status(404).json({ error: '文件不存在' });
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const file = rows[0];
+    if (!canReviewSubmission(req.user, file)) {
+      return res.status(403).json({ error: 'No permission to approve this file' });
     }
 
     await pool.query('UPDATE file_submissions SET status = ? WHERE id = ?', ['approved', fileId]);
 
-    const file = rows[0];
     if (file.submitted_by) {
       await pool.query(
         'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', '文件审核通过', `您提交的文件"${file.file_name}"已审核通过`, file.submitted_by]
+        [uuidv4(), 'file', 'File approved', `Your file "${file.file_name}" was approved`, file.submitted_by]
       );
     }
 
@@ -186,33 +233,36 @@ router.put('/:id/approve', authenticateToken, requireRole('secretary', 'viceSecr
       ip_address: req.ip
     });
 
-    res.json({ message: '文件审核通过' });
+    res.json({ message: 'File approved' });
   } catch (err) {
-    console.error('审核文件错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Approve file error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
 router.put('/:id/return', authenticateToken, requireRole('secretary', 'viceSecretary', 'minister', 'viceMinister'), async (req, res) => {
   try {
     const fileId = req.params.id;
-    const { return_reason } = req.body;
-
+    const returnReason = req.body.return_reason || req.body.reason;
     const [rows] = await pool.query('SELECT * FROM file_submissions WHERE id = ?', [fileId]);
     if (rows.length === 0) {
-      return res.status(404).json({ error: '文件不存在' });
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const file = rows[0];
+    if (!canReviewSubmission(req.user, file)) {
+      return res.status(403).json({ error: 'No permission to return this file' });
     }
 
     await pool.query(
       'UPDATE file_submissions SET status = ?, returned_by = ?, returned_at = NOW(), return_reason = ? WHERE id = ?',
-      ['returned', req.user.id, return_reason || null, fileId]
+      ['returned', req.user.id, returnReason || null, fileId]
     );
 
-    const file = rows[0];
     if (file.submitted_by) {
       await pool.query(
         'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', '文件被退回', `您提交的文件"${file.file_name}"被退回，原因：${return_reason || '无'}`, file.submitted_by]
+        [uuidv4(), 'file', 'File returned', `Your file "${file.file_name}" was returned. Reason: ${returnReason || 'None'}`, file.submitted_by]
       );
     }
 
@@ -221,34 +271,41 @@ router.put('/:id/return', authenticateToken, requireRole('secretary', 'viceSecre
       action: 'return_file',
       target_type: 'file',
       target_id: fileId,
-      details: { return_reason },
+      details: { return_reason: returnReason },
       ip_address: req.ip
     });
 
-    res.json({ message: '文件已退回' });
+    res.json({ message: 'File returned' });
   } catch (err) {
-    console.error('退回文件错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Return file error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-router.put('/:id/resubmit', authenticateToken, requireRole('branchSecretary'), async (req, res) => {
+router.put('/:id/resubmit', authenticateToken, requireRole('branchSecretary'), upload.single('file'), async (req, res) => {
   try {
     const fileId = req.params.id;
-
     const [rows] = await pool.query('SELECT * FROM file_submissions WHERE id = ?', [fileId]);
     if (rows.length === 0) {
-      return res.status(404).json({ error: '文件不存在' });
+      return res.status(404).json({ error: 'File not found' });
     }
 
     const file = rows[0];
     if (file.submitted_by !== req.user.id) {
-      return res.status(403).json({ error: '只能重新提交自己的文件' });
+      return res.status(403).json({ error: 'You can only resubmit your own file' });
     }
 
+    if (!req.file) {
+      return res.status(400).json({ error: 'Please choose a replacement file' });
+    }
+
+    const originalName = normalizeOriginalName(req.file.originalname);
     await pool.query(
-      'UPDATE file_submissions SET status = ?, returned_by = NULL, returned_at = NULL, return_reason = NULL, submitted_at = NOW() WHERE id = ?',
-      ['pending', fileId]
+      `UPDATE file_submissions
+       SET file_name = ?, file_path = ?, file_size = ?, status = ?, returned_by = NULL,
+           returned_at = NULL, return_reason = NULL, submitted_at = NOW()
+       WHERE id = ?`,
+      [originalName, req.file.path, req.file.size, 'pending', fileId]
     );
 
     const [taskRows] = await pool.query('SELECT title, department_id FROM tasks WHERE id = ?', [file.task_id]);
@@ -260,7 +317,7 @@ router.put('/:id/resubmit', authenticateToken, requireRole('branchSecretary'), a
       for (const leader of leaders) {
         await pool.query(
           'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-          [uuidv4(), 'file', '文件重新提交', `${req.user.name} 重新提交了任务「${taskRows[0].title}」的文件`, leader.id]
+          [uuidv4(), 'file', 'File resubmitted', `${req.user.name} resubmitted a file for "${taskRows[0].title}"`, leader.id]
         );
       }
     }
@@ -270,13 +327,48 @@ router.put('/:id/resubmit', authenticateToken, requireRole('branchSecretary'), a
       action: 'resubmit_file',
       target_type: 'file',
       target_id: fileId,
+      details: { file_name: originalName },
       ip_address: req.ip
     });
 
-    res.json({ message: '文件已重新提交' });
+    res.json({ message: 'File resubmitted' });
   } catch (err) {
-    console.error('重新提交文件错误：', err);
-    res.status(500).json({ error: '服务器错误' });
+    console.error('Resubmit file error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.delete('/:id', authenticateToken, requireRole('secretary', 'viceSecretary'), async (req, res) => {
+  try {
+    const fileId = req.params.id;
+    const [rows] = await pool.query('SELECT * FROM file_submissions WHERE id = ?', [fileId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const file = rows[0];
+    if (file.status !== 'returned') {
+      return res.status(400).json({ error: 'Only returned submissions can be deleted' });
+    }
+
+    await pool.query('DELETE FROM file_submissions WHERE id = ?', [fileId]);
+    if (file.file_path && fs.existsSync(file.file_path)) {
+      fs.unlink(file.file_path, () => {});
+    }
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'delete_returned_file',
+      target_type: 'file',
+      target_id: fileId,
+      details: { file_name: file.file_name },
+      ip_address: req.ip
+    });
+
+    res.json({ message: 'Returned submission deleted' });
+  } catch (err) {
+    console.error('Delete returned file error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

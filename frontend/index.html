@@ -170,6 +170,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .submission-item .sub-name{font-size:13px;font-weight:600}
 .submission-item .sub-meta{font-size:11px;color:var(--text3)}
 .submission-item .sub-status{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
+.assignment-panel{border:1px solid var(--border);border-radius:10px;background:#fafafa;padding:10px;max-height:260px;overflow:auto}
+.assignment-tip{font-size:12px;color:var(--text3);margin-bottom:8px}
+.assignment-group{margin-top:10px}
+.assignment-group-title{font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px}
+.assignment-subtitle{font-size:11px;font-weight:700;color:var(--text3);margin:8px 0 5px}
+.assignment-chip-wrap{display:flex;flex-wrap:wrap;gap:6px}
+.assignment-chip{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:999px;background:#fff;padding:6px 11px;font-size:12px;font-weight:600;color:var(--text2);cursor:pointer;user-select:none;transition:.15s ease}
+.assignment-chip input{position:absolute;opacity:0;pointer-events:none}
+.assignment-chip.selected{border-color:#52c41a;background:#f6ffed;color:#237804;box-shadow:0 0 0 2px rgba(82,196,26,.12)}
+.assignment-summary{font-size:12px;color:var(--text3);margin-top:8px}
+.completion-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.completion-title{font-size:15px;font-weight:700;color:var(--text)}
+.completion-tools{display:flex;align-items:center;gap:8px}
+.completion-search{width:150px;border:1px solid var(--border);border-radius:999px;padding:6px 10px;font-size:12px}
+.completion-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px}
+.completion-card{position:relative;min-height:76px;border:1px solid var(--border);border-radius:8px;background:#fafafa;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text3)}
+.completion-card.done{border-color:#63c36f;background:#f6ffed;color:#45a94f}
+.completion-card .idx{font-size:16px;font-weight:700;line-height:1}
+.completion-card .name{font-size:12px;font-weight:700;margin-top:8px;text-align:center;max-width:78px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.completion-card .corner{position:absolute;right:-1px;top:-1px;width:26px;height:26px;border-radius:0 8px 0 16px;background:#63c36f;color:#fff;font-size:16px;font-weight:900;text-align:center;line-height:24px;display:none}
+.completion-card.done .corner{display:block}
 .summary-item{display:flex;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;gap:10px;background:#f6ffed}
 .summary-item .sum-info{flex:1;min-width:0}
 .summary-item .sum-name{font-size:13px;font-weight:600}
@@ -300,12 +321,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
         <div class="form-group">
           <label>频次</label>
           <select id="taskFrequency">
-            <option value="每周">每周</option>
-            <option value="每月">每月</option>
-            <option value="每季度">每季度</option>
-            <option value="每学期">每学期</option>
             <option value="每年">每年</option>
-            <option value="不定期">不定期</option>
           </select>
         </div>
       </div>
@@ -328,15 +344,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
         </div>
         <div class="form-group">
           <label>指派给</label>
-          <select id="taskAssignedTo">
-            <option value="all">所有人</option>
-            <option value="branchSecretaries">团支书</option>
-          </select>
+          <input type="hidden" id="taskAssignedTo" value="all">
+          <div id="assignmentPanel" class="assignment-panel"></div>
         </div>
       </div>
       <div class="form-group">
         <label>类型</label>
-        <select id="taskIsRegular">
+        <select id="taskIsRegular" onchange="syncTaskFrequencyVisibility()">
           <option value="true">常态化</option>
           <option value="false">一次性</option>
         </select>
@@ -548,7 +562,8 @@ var API = {
   post: function(url, body) { return fetch(url, {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); },
   put: function(url, body) { return fetch(url, {method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); },
   del: function(url) { return fetch(url, {method:'DELETE',credentials:'same-origin'}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); },
-  upload: function(url, formData) { return fetch(url, {method:'POST',credentials:'same-origin',body:formData}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); }
+  upload: function(url, formData) { return fetch(url, {method:'POST',credentials:'same-origin',body:formData}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); },
+  uploadPut: function(url, formData) { return fetch(url, {method:'PUT',credentials:'same-origin',body:formData}).then(function(r) { if(r.status===401) { state.currentUser=null; showLogin(); return Promise.reject({error:'未登录'}); } return r.json().then(function(d) { if(!r.ok) return Promise.reject(d); return d; }); }); }
 };
 
 function mapTask(t) { return { id:t.id, title:t.title, description:t.description, category:t.category, year:t.year, month:t.month, day:t.day, frequency:t.frequency, timeSlot:t.time_slot, department:t.department_id, assignedTo:t.assigned_to, createdBy:t.created_by, isRegular:!!t.is_regular, status:t.status, createdAt:t.created_at }; }
@@ -593,6 +608,7 @@ var state = {
   data: null,
   pendingFiles: [],
   pendingSummaryFiles: [],
+  resubmitFileId: null,
   deptDetailId: null,
   deptDetailTab: 'tasks',
   isPreviousYear: false
@@ -602,18 +618,18 @@ function loadData() {
   return Promise.all([
     API.get('/api/tasks'),
     API.get('/api/departments'),
-    API.get('/api/users'),
+    API.get('/api/users').catch(function() { return API.get('/api/users/assignees').catch(function() { return { users: [] }; }); }),
     API.get('/api/files'),
     API.get('/api/summary'),
     API.get('/api/notifications')
   ]).then(function(results) {
     state.data = {
-      tasks: (results[0] || []).map(mapTask),
-      departments: (results[1] || []).map(mapDept),
-      users: (results[2] || []).map(mapUser),
-      fileSubmissions: (results[3] || []).map(mapFile),
-      summaryFiles: (results[4] || []).map(mapSummary),
-      notifications: (results[5] || []).map(mapNotif)
+      tasks: ((results[0] && results[0].tasks) || []).map(mapTask),
+      departments: ((results[1] && results[1].departments) || []).map(mapDept),
+      users: ((results[2] && results[2].users) || []).map(mapUser),
+      fileSubmissions: ((results[3] && results[3].files) || []).map(mapFile),
+      summaryFiles: ((results[4] && results[4].summaries) || []).map(mapSummary),
+      notifications: ((results[5] && results[5].notifications) || []).map(mapNotif)
     };
   }).catch(function(err) {
     console.error('加载数据失败:', err);
@@ -646,10 +662,15 @@ function canSubmitFile() {
   return state.currentUser.role === 'branchSecretary';
 }
 
+function canCurrentUserSubmitTask(task) {
+  if (!canSubmitFile()) return false;
+  return getAssignedUsersForTask(task, false).some(function(user) { return user.id === state.currentUser.id; });
+}
+
 function canReturnFile() {
   if (!state.currentUser) return false;
   var r = state.currentUser.role;
-  return r === 'secretary' || r === 'viceSecretary' || r === 'minister' || r === 'member';
+  return r === 'secretary' || r === 'viceSecretary' || r === 'minister' || r === 'viceMinister';
 }
 
 function canUploadSummary() {
@@ -699,18 +720,149 @@ function canViewFileFromFileDept(fileDeptId) {
 function canReturnFileFromFileDept(fileDeptId) {
   if (!state.currentUser) return false;
   if (state.currentUser.role === 'secretary' || state.currentUser.role === 'viceSecretary') return true;
-  if (state.currentUser.role === 'minister' || state.currentUser.role === 'member') {
+  if (state.currentUser.role === 'minister' || state.currentUser.role === 'viceMinister') {
     return state.currentUser.department === fileDeptId;
   }
   return false;
 }
 
 function getTaskAssignedToLabel(assignedTo) {
-  if (assignedTo === 'all') return '所有人';
-  if (assignedTo === 'branchSecretaries') return '团支书';
-  if (ROLE_MAP[assignedTo]) return ROLE_MAP[assignedTo];
-  var user = state.data.users.find(function(u) { return u.id === assignedTo; });
-  return user ? user.name : assignedTo;
+  var assignment = parseAssignment(assignedTo);
+  if (assignment.mode === 'all') return '所有人';
+  var labels = [];
+  getAssignmentOptions().forEach(function(opt) {
+    if (assignment.tags.indexOf(opt.id) !== -1) labels.push(opt.label);
+  });
+  assignment.users.forEach(function(id) {
+    var user = state.data.users.find(function(u) { return u.id === id; });
+    if (user) labels.push(user.name);
+  });
+  return labels.length ? labels.join('、') : '部分可见';
+}
+
+function parseAssignment(value) {
+  if (!value || value === 'all') return { mode: 'all', tags: ['all'], users: [] };
+  if (value === 'branchSecretaries') return { mode: 'partial', tags: ['branch:all'], users: [] };
+  try {
+    var parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return {
+      mode: parsed.mode === 'partial' ? 'partial' : 'all',
+      tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+      users: Array.isArray(parsed.users) ? parsed.users : []
+    };
+  } catch (e) {
+    return { mode: 'partial', tags: [], users: [value] };
+  }
+}
+
+function serializeAssignmentFromPanel() {
+  var tags = Array.from(document.querySelectorAll('#assignmentPanel input[data-tag]:checked')).map(function(i) { return i.getAttribute('data-tag'); });
+  var users = Array.from(document.querySelectorAll('#assignmentPanel input[data-user]:checked')).map(function(i) { return i.getAttribute('data-user'); });
+  if (tags.indexOf('all') !== -1) return 'all';
+  return JSON.stringify({ mode: 'partial', tags: tags, users: users });
+}
+
+function getAssignmentOptions() {
+  var opts = [
+    { group: '团委工作人员', section: '团委（副）书记', id: 'committee:secretariat', label: '团委（副）书记' },
+    { group: '团委工作人员', section: '部长', id: 'committee:leaders:all', label: '全体部长' },
+    { group: '团委工作人员', section: '部门', id: 'committee:dept:all', label: '全部部门' },
+    { group: '团支书', section: '全部', id: 'branch:all', label: '全体团支书' }
+  ];
+  state.data.departments.forEach(function(d) {
+    var leaderTitle = d.name === '办公室' ? '主任' : '部长';
+    opts.push({ group: '团委工作人员', section: '部长', id: 'committee:leaders:dept:' + d.id, label: d.name + leaderTitle });
+    opts.push({ group: '团委工作人员', section: '部门', id: 'committee:dept:' + d.id, label: d.name });
+  });
+  return opts;
+}
+
+function userMatchesAssignmentTag(user, tag) {
+  if (tag === 'all') return true;
+  if (tag === 'committee:all') return user.role !== 'branchSecretary';
+  if (tag === 'committee:secretariat') return user.role === 'secretary' || user.role === 'viceSecretary';
+  if (tag === 'committee:leaders:all') return user.role === 'minister' || user.role === 'viceMinister';
+  if (tag.indexOf('committee:leaders:dept:') === 0) return (user.role === 'minister' || user.role === 'viceMinister') && user.department === tag.replace('committee:leaders:dept:', '');
+  if (tag === 'committee:dept:all') return user.role !== 'branchSecretary' && !!user.department;
+  if (tag === 'branch:all') return user.role === 'branchSecretary';
+  if (tag.indexOf('committee:role:') === 0) return user.role === tag.replace('committee:role:', '');
+  if (tag.indexOf('committee:dept:') === 0) return user.role !== 'branchSecretary' && user.department === tag.replace('committee:dept:', '');
+  if (tag.indexOf('branch:dept:') === 0) return user.role === 'branchSecretary' && user.department === tag.replace('branch:dept:', '');
+  return false;
+}
+
+function canDeleteReturnedFile() {
+  return state.currentUser && (state.currentUser.role === 'secretary' || state.currentUser.role === 'viceSecretary');
+}
+
+function getAssignedUsersForTask(task, branchOnly) {
+  var assignment = parseAssignment(task.assignedTo);
+  var users = state.data.users.slice();
+  if (branchOnly) users = users.filter(function(u) { return u.role === 'branchSecretary'; });
+  if (assignment.mode === 'all') return users;
+  var ids = {};
+  assignment.users.forEach(function(id) { ids[id] = true; });
+  users.forEach(function(user) {
+    if (assignment.tags.some(function(tag) { return userMatchesAssignmentTag(user, tag); })) ids[user.id] = true;
+  });
+  return users.filter(function(user) { return !!ids[user.id]; });
+}
+
+function renderAssignmentPanel(assignedTo) {
+  var panel = document.getElementById('assignmentPanel');
+  if (!panel) return;
+  var assignment = parseAssignment(assignedTo);
+  var selectedTags = assignment.mode === 'all' ? ['committee:all', 'branch:all'] : assignment.tags;
+  var html = '<div class="assignment-tip">选择标签会派发给该标签下所有人，也可以直接选择具体人员。</div>';
+  ['团委工作人员', '团支书'].forEach(function(group) {
+    html += '<div class="assignment-group"><div class="assignment-group-title">' + group + '</div>';
+    var sections = group === '团委工作人员' ? ['团委（副）书记', '部长', '部门'] : ['全部'];
+    sections.forEach(function(section) {
+      var opts = getAssignmentOptions().filter(function(opt) { return opt.group === group && opt.section === section; });
+      if (!opts.length) return;
+      html += '<div class="assignment-subtitle">' + section + '</div><div class="assignment-chip-wrap">';
+      opts.forEach(function(opt) {
+        html += '<label class="assignment-chip"><input type="checkbox" data-tag="' + opt.id + '"' + (selectedTags.indexOf(opt.id) !== -1 ? ' checked' : '') + ' onchange="onAssignmentCheck(this)"> ' + escHtml(opt.label) + '</label>';
+      });
+      html += '</div>';
+    });
+    var users = [];
+    if (users.length) {
+      html += '<div class="assignment-subtitle">选择人员</div><div class="assignment-chip-wrap">';
+      users.forEach(function(user) {
+        html += '<label class="assignment-chip"><input type="checkbox" data-user="' + user.id + '"' + (assignment.users.indexOf(user.id) !== -1 ? ' checked' : '') + ' onchange="onAssignmentCheck(this)"> ' + escHtml(user.name) + '</label>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  html += '<div id="assignmentSummary" class="assignment-summary"></div>';
+  panel.innerHTML = html;
+  updateAssignmentSummary();
+}
+
+function onAssignmentCheck(input) {
+  if (input.checked && input.getAttribute('data-tag') === 'all') {
+    Array.from(document.querySelectorAll('#assignmentPanel input[type="checkbox"]')).forEach(function(item) {
+      if (item !== input) item.checked = false;
+    });
+  } else if (input.checked) {
+    var all = document.querySelector('#assignmentPanel input[data-tag="all"]');
+    if (all) all.checked = false;
+  }
+  updateAssignmentSummary();
+}
+
+function updateAssignmentSummary() {
+  Array.from(document.querySelectorAll('#assignmentPanel .assignment-chip')).forEach(function(chip) {
+    var input = chip.querySelector('input');
+    chip.classList.toggle('selected', !!(input && input.checked));
+  });
+  var summary = document.getElementById('assignmentSummary');
+  if (!summary) return;
+  var value = serializeAssignmentFromPanel();
+  document.getElementById('taskAssignedTo').value = value;
+  summary.textContent = '当前：' + getTaskAssignedToLabel(value);
 }
 
 function showToast(msg, type) {
@@ -1031,7 +1183,7 @@ function createTaskCard(task) {
   var deptColor = getDeptColor(task.department);
   var actionsHtml = '';
   actionsHtml += '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTaskDetail(\'' + task.id + '\')">详情</button>';
-  if (canSubmitFile()) {
+  if (canCurrentUserSubmitTask(task)) {
     actionsHtml += '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openFileSubmit(\'' + task.id + '\')">提交文件</button>';
   }
   if (canUploadSummary() && canAccessDept(task.department)) {
@@ -1100,6 +1252,14 @@ function initTaskDeptOptions() {
   }
 }
 
+function syncTaskFrequencyVisibility() {
+  var isRegular = document.getElementById('taskIsRegular').value === 'true';
+  var frequency = document.getElementById('taskFrequency');
+  var group = frequency.closest('.form-group');
+  frequency.value = '每年';
+  if (group) group.style.display = isRegular ? '' : 'none';
+}
+
 function openTaskModal(editId) {
   initTaskMonthOptions();
   initTaskDeptOptions();
@@ -1111,25 +1271,28 @@ function openTaskModal(editId) {
     document.getElementById('taskTitle').value = task.title || '';
     document.getElementById('taskDepartment').value = task.department || '';
     document.getElementById('taskCategory').value = task.category || '组织生活';
-    document.getElementById('taskFrequency').value = task.frequency || '每月';
+    document.getElementById('taskFrequency').value = '每年';
     document.getElementById('taskTimeSlot').value = task.timeSlot || '';
     document.getElementById('taskMonth').value = task.month || '';
     document.getElementById('taskDay').value = task.day || '';
     document.getElementById('taskAssignedTo').value = task.assignedTo || 'all';
+    renderAssignmentPanel(task.assignedTo || 'all');
     document.getElementById('taskIsRegular').value = task.isRegular ? 'true' : 'false';
     document.getElementById('taskDesc').value = task.description || '';
   } else {
     document.getElementById('taskModalTitle').textContent = '添加任务';
     document.getElementById('taskTitle').value = '';
     document.getElementById('taskCategory').value = '组织生活';
-    document.getElementById('taskFrequency').value = '每月';
+    document.getElementById('taskFrequency').value = '每年';
     document.getElementById('taskTimeSlot').value = '';
     document.getElementById('taskMonth').value = state.currentMonth;
     document.getElementById('taskDay').value = '';
     document.getElementById('taskAssignedTo').value = 'all';
+    renderAssignmentPanel('all');
     document.getElementById('taskIsRegular').value = 'true';
     document.getElementById('taskDesc').value = '';
   }
+  syncTaskFrequencyVisibility();
   document.getElementById('taskModalOverlay').classList.add('active');
 }
 
@@ -1143,16 +1306,21 @@ function saveTask() {
   var department = document.getElementById('taskDepartment').value;
   if (!department) { showToast('请选择所属部门', 'error'); return; }
   var editId = document.getElementById('taskEditId').value;
+  var isRegular = document.getElementById('taskIsRegular').value === 'true';
+  document.getElementById('taskAssignedTo').value = serializeAssignmentFromPanel();
+  var selectedTags = document.querySelectorAll('#assignmentPanel input[data-tag]:checked').length;
+  var selectedUsers = document.querySelectorAll('#assignmentPanel input[data-user]:checked').length;
+  if (!selectedTags && !selectedUsers) { showToast('请选择派发标签或人员', 'error'); return; }
   var formData = {
     title: title,
     department_id: department,
     category: document.getElementById('taskCategory').value,
-    frequency: document.getElementById('taskFrequency').value,
+    frequency: isRegular ? '每年' : '不定期',
     time_slot: document.getElementById('taskTimeSlot').value.trim(),
     month: document.getElementById('taskMonth').value ? parseInt(document.getElementById('taskMonth').value) : null,
     day: document.getElementById('taskDay').value ? parseInt(document.getElementById('taskDay').value) : null,
     assigned_to: document.getElementById('taskAssignedTo').value,
-    is_regular: document.getElementById('taskIsRegular').value === 'true',
+    is_regular: isRegular,
     description: document.getElementById('taskDesc').value.trim()
   };
 
@@ -1236,10 +1404,11 @@ function openTaskDetail(taskId) {
   if (state.currentUser.role === 'minister' || state.currentUser.role === 'member') {
     subs = subs.filter(function(f) { return f.department === state.currentUser.department; });
   }
+  body.appendChild(createCompletionSection(task, subs));
   var subSection = document.createElement('div');
   subSection.className = 'task-detail-section';
   subSection.innerHTML = '<h4>文件提交 (' + subs.length + ')</h4>';
-  if (canSubmitFile()) {
+  if (canCurrentUserSubmitTask(task)) {
     var submitBtn = document.createElement('button');
     submitBtn.className = 'btn btn-primary btn-sm';
     submitBtn.style.marginBottom = '10px';
@@ -1261,6 +1430,9 @@ function openTaskDetail(taskId) {
       if (sub.status === 'pending' && canReturnFileFromFileDept(sub.department)) {
         actionsHtml += ' <button class="btn btn-success btn-sm" onclick="approveFile(\'' + sub.id + '\')">通过</button>';
         actionsHtml += ' <button class="btn btn-danger btn-sm" onclick="openReturnModal(\'' + sub.id + '\')">打回</button>';
+      }
+      if (sub.status === 'returned' && canDeleteReturnedFile()) {
+        actionsHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteReturnedSubmission(\'' + sub.id + '\')">删除记录</button>';
       }
       var returnReasonHtml = '';
       if (sub.status === 'returned' && sub.returnReason) {
@@ -1318,8 +1490,66 @@ function closeTaskDetail() {
   document.getElementById('taskDetailOverlay').classList.remove('active');
 }
 
+function createCompletionSection(task, subs) {
+  var section = document.createElement('div');
+  section.className = 'task-detail-section';
+  var targets = getAssignedUsersForTask(task, true);
+  var submitted = {};
+  subs.forEach(function(sub) {
+    if (sub.status !== 'returned') submitted[sub.submittedBy] = true;
+  });
+  var done = targets.filter(function(user) { return submitted[user.id]; }).length;
+  section.innerHTML =
+    '<div class="completion-head">' +
+      '<div class="completion-title">完成情况（' + done + '/' + targets.length + '）</div>' +
+      '<div class="completion-tools">' +
+        '<input class="completion-search" id="completionSearch_' + task.id + '" placeholder="搜索" oninput="renderCompletionGrid(\'' + task.id + '\')">' +
+        '<button class="btn btn-secondary btn-sm" onclick="notifyUnsubmitted(\'' + task.id + '\')">通知未填人员</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="completion-grid" id="completionGrid_' + task.id + '"></div>';
+  setTimeout(function() { renderCompletionGrid(task.id); }, 0);
+  return section;
+}
+
+function renderCompletionGrid(taskId) {
+  var task = state.data.tasks.find(function(t) { return t.id === taskId; });
+  var grid = document.getElementById('completionGrid_' + taskId);
+  if (!task || !grid) return;
+  var qEl = document.getElementById('completionSearch_' + taskId);
+  var q = qEl ? qEl.value.trim().toLowerCase() : '';
+  var targets = getAssignedUsersForTask(task, true);
+  var subs = state.data.fileSubmissions.filter(function(f) { return f.taskId === taskId && f.status !== 'returned'; });
+  var submitted = {};
+  subs.forEach(function(sub) { submitted[sub.submittedBy] = true; });
+  if (q) targets = targets.filter(function(user) { return user.name.toLowerCase().indexOf(q) !== -1; });
+  if (!targets.length) {
+    grid.innerHTML = '<p style="grid-column:1/-1;font-size:13px;color:var(--text3)">该任务未指派团支书提交文件</p>';
+    return;
+  }
+  grid.innerHTML = '';
+  targets.forEach(function(user, idx) {
+    var card = document.createElement('div');
+    card.className = 'completion-card' + (submitted[user.id] ? ' done' : '');
+    card.innerHTML = '<div class="corner">✓</div><div class="idx">' + (idx + 1) + '</div><div class="name">' + escHtml(user.name) + '</div>';
+    grid.appendChild(card);
+  });
+}
+
+function notifyUnsubmitted(taskId) {
+  var task = state.data.tasks.find(function(t) { return t.id === taskId; });
+  if (!task) return;
+  var targets = getAssignedUsersForTask(task, true);
+  var subs = state.data.fileSubmissions.filter(function(f) { return f.taskId === taskId && f.status !== 'returned'; });
+  var submitted = {};
+  subs.forEach(function(sub) { submitted[sub.submittedBy] = true; });
+  var names = targets.filter(function(user) { return !submitted[user.id]; }).map(function(user) { return user.name; });
+  showToast(names.length ? ('未提交：' + names.join('、')) : '已全部提交', names.length ? 'warning' : 'success');
+}
+
 function openFileSubmit(taskId) {
   document.getElementById('fileSubmitTaskId').value = taskId;
+  state.resubmitFileId = null;
   state.pendingFiles = [];
   document.getElementById('pendingFileList').innerHTML = '';
   document.getElementById('fileInput').value = '';
@@ -1330,6 +1560,7 @@ function openFileSubmit(taskId) {
 function closeFileSubmit() {
   document.getElementById('fileSubmitOverlay').classList.remove('active');
   state.pendingFiles = [];
+  state.resubmitFileId = null;
 }
 
 function setupFileDropZone() {
@@ -1382,9 +1613,28 @@ function confirmFileSubmit() {
   var taskId = document.getElementById('fileSubmitTaskId').value;
   var task = state.data.tasks.find(function(t) { return t.id === taskId; });
   if (!task) { showToast('任务不存在', 'error'); return; }
+  if (state.resubmitFileId) {
+    if (state.pendingFiles.length !== 1) {
+      showToast('重新提交请选择一个替换文件', 'error');
+      return;
+    }
+    var replacement = new FormData();
+    replacement.append('file', state.pendingFiles[0]);
+    API.uploadPut('/api/files/' + state.resubmitFileId + '/resubmit', replacement).then(function() {
+      closeFileSubmit();
+      state.resubmitFileId = null;
+      loadData().then(function() {
+        renderContent();
+        showToast('文件已重新提交', 'success');
+      });
+    }).catch(function(err) {
+      showToast(err.error || '重新提交失败', 'error');
+    });
+    return;
+  }
   var promises = state.pendingFiles.map(function(file) {
     var formData = new FormData();
-    formData.append('taskId', taskId);
+    formData.append('task_id', taskId);
     formData.append('file', file);
     return API.upload('/api/files', formData);
   });
@@ -1463,7 +1713,7 @@ function confirmSummaryUpload() {
   var taskId = document.getElementById('summaryTaskId').value;
   var promises = state.pendingSummaryFiles.map(function(file) {
     var formData = new FormData();
-    formData.append('taskId', taskId);
+    formData.append('task_id', taskId);
     formData.append('file', file);
     return API.upload('/api/summary', formData);
   });
@@ -1546,6 +1796,33 @@ function resubmitFile(subId) {
     });
   }).catch(function(err) {
     showToast(err.error || '操作失败', 'error');
+  });
+}
+
+function resubmitFile(subId) {
+  var sub = state.data.fileSubmissions.find(function(f) { return f.id === subId; });
+  if (!sub) {
+    showToast('文件不存在', 'error');
+    return;
+  }
+  state.resubmitFileId = subId;
+  document.getElementById('fileSubmitTaskId').value = sub.taskId;
+  state.pendingFiles = [];
+  document.getElementById('pendingFileList').innerHTML = '';
+  document.getElementById('fileInput').value = '';
+  setupFileDropZone();
+  document.getElementById('fileSubmitOverlay').classList.add('active');
+}
+
+function deleteReturnedSubmission(subId) {
+  if (!confirm('确定删除这条已打回提交记录吗？')) return;
+  API.del('/api/files/' + subId).then(function() {
+    loadData().then(function() {
+      renderContent();
+      showToast('提交记录已删除', 'success');
+    });
+  }).catch(function(err) {
+    showToast(err.error || '删除失败', 'error');
   });
 }
 
@@ -1652,6 +1929,9 @@ function createFileCard(sub) {
   }
   if (sub.status === 'returned' && state.currentUser.role === 'branchSecretary' && sub.submittedBy === state.currentUser.id) {
     actionsHtml += ' <button class="btn btn-primary btn-sm" onclick="resubmitFile(\'' + sub.id + '\')">重新提交</button>';
+  }
+  if (sub.status === 'returned' && canDeleteReturnedFile()) {
+    actionsHtml += ' <button class="btn btn-danger btn-sm" onclick="deleteReturnedSubmission(\'' + sub.id + '\')">删除记录</button>';
   }
   var returnReasonHtml = '';
   if (sub.status === 'returned' && sub.returnReason) {

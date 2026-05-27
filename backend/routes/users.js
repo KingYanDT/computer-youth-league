@@ -5,6 +5,17 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const auditLog = require('../utils/auditLog');
+const VALID_ROLES = ['secretary', 'viceSecretary', 'minister', 'viceMinister', 'member', 'branchSecretary'];
+
+router.get('/assignees', authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, name, username, role, department_id, created_at FROM users ORDER BY role, name');
+    res.json({ users: rows });
+  } catch (err) {
+    console.error('Get assignees error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 router.get('/', authenticateToken, requireRole('secretary'), async (req, res) => {
   try {
@@ -22,6 +33,10 @@ router.post('/', authenticateToken, requireRole('secretary'), async (req, res) =
 
     if (!name || !username || !password || !role) {
       return res.status(400).json({ error: '请填写必要字段' });
+    }
+
+    if (!VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
     }
 
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
@@ -58,13 +73,20 @@ router.put('/:id', authenticateToken, requireRole('secretary'), async (req, res)
     const { name, role, department_id } = req.body;
     const userId = req.params.id;
 
+    if (!name || !role) {
+      return res.status(400).json({ error: 'Name and role are required' });
+    }
+    if (!VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
     const [existing] = await pool.query('SELECT id FROM users WHERE id = ?', [userId]);
     if (existing.length === 0) {
       return res.status(404).json({ error: '用户不存在' });
     }
 
     await pool.query(
-      'UPDATE users SET name = ?, role = ?, department_id = ? WHERE id = ?',
+      'UPDATE users SET name = ?, role = ?, department_id = ?, token_version = token_version + 1 WHERE id = ?',
       [name, role, department_id || null, userId]
     );
 
@@ -93,7 +115,14 @@ router.put('/:id/role', authenticateToken, requireRole('secretary'), async (req,
       return res.status(400).json({ error: '请指定角色' });
     }
 
-    await pool.query('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+    if (!VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const [result] = await pool.query('UPDATE users SET role = ?, token_version = token_version + 1 WHERE id = ?', [role, userId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
     await auditLog({
       user_id: req.user.id,

@@ -52,7 +52,7 @@ async function initDatabase() {
         frequency ENUM('每周','每月','每季度','每学期','每年','不定期') DEFAULT '不定期',
         time_slot VARCHAR(100),
         department_id VARCHAR(36),
-        assigned_to ENUM('all','branchSecretaries') DEFAULT 'all',
+        assigned_to TEXT,
         created_by VARCHAR(36),
         is_regular BOOLEAN DEFAULT FALSE,
         status ENUM('active','completed') DEFAULT 'active',

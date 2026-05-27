@@ -5,7 +5,11 @@ const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const { authenticateToken } = require('./middleware/auth');
+const { normalizeOriginalName } = require('./utils/fileName');
+const pool = require('./config/db');
 
 if (!process.env.JWT_SECRET) {
   console.error('错误：JWT_SECRET 环境变量未设置，服务器拒绝启动');
@@ -21,7 +25,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' }
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: false
 }));
 
 const corsOptions = {
@@ -55,7 +60,11 @@ const ALLOWED_EXTENSIONS = /\.(doc|docx|pdf|xls|xlsx|ppt|pptx|txt|csv|jpg|jpeg|p
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '..', 'uploads'));
+    const uploadDir = path.join(__dirname, '..', 'uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
@@ -85,12 +94,13 @@ app.use('/api/files', require('./routes/files'));
 app.use('/api/summary', require('./routes/summary'));
 app.use('/api/notifications', require('./routes/notifications'));
 
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: '请选择文件' });
   }
+  const originalName = normalizeOriginalName(req.file.originalname);
   res.json({
-    file_name: req.file.originalname,
+    file_name: originalName,
     file_path: req.file.path,
     file_size: req.file.size
   });
@@ -103,7 +113,7 @@ app.use((err, req, res, next) => {
     }
     return res.status(400).json({ error: '文件上传错误' });
   }
-  if (err.message === '不支持的文件类型') {
+  if (err.message === '不支持的文件类型' || err.message === 'Unsupported file type') {
     return res.status(400).json({ error: err.message });
   }
   console.error(err);
@@ -117,6 +127,14 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`服务器运行在 http://localhost:${PORT}`);
+async function ensureSchema() {
+  await pool.query("ALTER TABLE tasks MODIFY assigned_to TEXT");
+}
+
+ensureSchema().catch((err) => {
+  console.warn('Schema check warning:', err.message);
+}).finally(() => {
+  app.listen(PORT, () => {
+    console.log(`服务器运行在 http://localhost:${PORT}`);
+  });
 });
