@@ -7,3 +7,6 @@ uploads/
 logs/
 github-prototype/
 mysql/
+tools/nodejs/
+runtime/
+release/
