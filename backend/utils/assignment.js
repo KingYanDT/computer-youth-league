@@ -57,8 +57,52 @@ function resolveAssignmentUsers(assignmentValue, users) {
   return [...ids];
 }
 
-async function getAssignedUsers(pool, assignmentValue) {
-  const [users] = await pool.query('SELECT id, name, role, department_id FROM users');
+/**
+ * 把任务的 assigned_to 解析后同步到 task_assignees 中间表。
+ * 必须在事务中调用，使用传入的 conn。
+ * 采用 "DELETE + INSERT" 策略保证幂等。
+ *
+ * @param {import('mysql2/promise').PoolConnection} conn
+ * @param {string} taskId
+ * @param {string} assignmentValue serializeAssignment 的输出
+ * @param {Array<{id:string,name:string,role:string,department_id:string|null}>} [allUsers]
+ *        可选预加载的用户列表，避免重复查库；未提供时会自行查询
+ */
+async function syncTaskAssignees(conn, taskId, assignmentValue, allUsers) {
+  let users = allUsers;
+  if (!users) {
+    const [rows] = await conn.query('SELECT id, name, role, department_id FROM users');
+    users = rows;
+  }
+  const userIds = resolveAssignmentUsers(assignmentValue, users);
+
+  await conn.query('DELETE FROM task_assignees WHERE task_id = ?', [taskId]);
+  if (userIds.length === 0) return;
+
+  // 批量插入
+  const values = userIds.map(uid => [taskId, uid]);
+  await conn.query('INSERT INTO task_assignees (task_id, user_id) VALUES ?', [values]);
+}
+
+/**
+ * 获取被指派到某任务的用户列表。
+ * 优先从 task_assignees 中间表查询（带索引）；
+ * 若中间表无记录（老数据未迁移），则回退到解析 assigned_to TEXT。
+ */
+async function getAssignedUsers(poolOrConn, assignmentValue, taskId) {
+  // 优先走中间表
+  if (taskId) {
+    const [rows] = await poolOrConn.query(
+      `SELECT u.id, u.name, u.role, u.department_id
+       FROM task_assignees ta
+       JOIN users u ON ta.user_id = u.id
+       WHERE ta.task_id = ?`,
+      [taskId]
+    );
+    if (rows.length > 0) return rows;
+  }
+  // 回退到 TEXT 解析（兼容未迁移的老任务）
+  const [users] = await poolOrConn.query('SELECT id, name, role, department_id FROM users');
   const ids = new Set(resolveAssignmentUsers(assignmentValue, users));
   return users.filter(user => ids.has(user.id));
 }
@@ -68,5 +112,6 @@ module.exports = {
   parseAssignment,
   serializeAssignment,
   resolveAssignmentUsers,
+  syncTaskAssignees,
   getAssignedUsers
 };

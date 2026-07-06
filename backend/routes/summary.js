@@ -1,42 +1,16 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const multer = require('multer');
 const pool = require('../config/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const auditLog = require('../utils/auditLog');
 const { normalizeOriginalName } = require('../utils/fileName');
+const { parsePagination, paginateResponse } = require('../utils/pagination');
+const upload = require('../utils/upload');
 
-const ALLOWED_EXTENSIONS = /\.(doc|docx|pdf|xls|xlsx|ppt|pptx|txt|csv|jpg|jpeg|png|gif|zip|rar)$/i;
 const COMMITTEE_ROLES = ['secretary', 'viceSecretary'];
 const DEPARTMENT_VIEW_ROLES = ['minister', 'viceMinister', 'member'];
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '..', '..', 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${uuidv4()}${ext}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 10485760 },
-  fileFilter: (req, file, cb) => {
-    if (!ALLOWED_EXTENSIONS.test(path.extname(file.originalname))) {
-      return cb(new Error('Unsupported file type'));
-    }
-    cb(null, true);
-  }
-});
 
 function isCommittee(user) {
   return COMMITTEE_ROLES.includes(user.role);
@@ -61,6 +35,7 @@ function applyVisibilityFilter(query, params, user) {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const requestedTaskId = req.query.task_id || req.query.taskId;
+    const pager = parsePagination(req.query, { defaultPageSize: 50 });
     let query = `
       SELECT sf.*, t.title as task_title, d.name as department_name
       FROM summary_files sf
@@ -76,10 +51,16 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 
     query = applyVisibilityFilter(query, params, req.user);
-    query += ' ORDER BY sf.uploaded_at DESC';
+
+    const countQuery = `SELECT COUNT(*) as total FROM (${query}) c`;
+    const [countRows] = await pool.query(countQuery, params);
+    const total = countRows[0].total;
+
+    query += ' ORDER BY sf.uploaded_at DESC LIMIT ? OFFSET ?';
+    params.push(pager.pageSize, pager.offset);
 
     const [rows] = await pool.query(query, params);
-    res.json({ summaries: rows });
+    res.json({ summaries: rows, ...paginateResponse(rows, total, pager) });
   } catch (err) {
     console.error('Get summaries error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -145,6 +126,14 @@ router.get('/:id/download', authenticateToken, async (req, res) => {
     if (!fs.existsSync(file.file_path)) {
       return res.status(404).json({ error: 'File is missing' });
     }
+
+    await auditLog({
+      user_id: req.user.id,
+      action: 'download_summary',
+      target_type: 'summary',
+      target_id: req.params.id,
+      ip_address: req.ip
+    });
 
     res.download(file.file_path, file.file_name);
   } catch (err) {

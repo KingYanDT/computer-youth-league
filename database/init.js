@@ -3,6 +3,18 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
+// 幂等添加索引：已存在时跳过，兼容老库升级
+async function addIndexIfNotExists(connection, table, indexName, columns) {
+  try {
+    await connection.query(`ALTER TABLE \`${table}\` ADD INDEX \`${indexName}\` (${columns})`);
+  } catch (err) {
+    // ER_DUP_KEYNAME (1061): 索引已存在，正常跳过
+    if (err.errno !== 1061) {
+      throw err;
+    }
+  }
+}
+
 async function initDatabase() {
   const connection = await mysql.createConnection({
     host: process.env.DB_HOST || 'localhost',
@@ -21,10 +33,20 @@ async function initDatabase() {
         name VARCHAR(50) NOT NULL,
         color VARCHAR(20),
         minister_id VARCHAR(36),
-        member_id VARCHAR(36),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // 老库兼容：若已存在 member_id 字段则删除（幂等）
+    try {
+      await connection.query(`ALTER TABLE departments DROP COLUMN member_id`);
+    } catch (err) {
+      // ER_CANT_DROP_FIELD_OR_KEY (1091) 字段不存在，正常跳过
+      if (err.errno !== 1091) {
+        // 其他错误忽略（如权限不足），不阻塞初始化
+        console.warn('跳过 departments.member_id 字段清理:', err.message);
+      }
+    }
 
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -61,6 +83,18 @@ async function initDatabase() {
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
       )
     `);
+
+    // 任务指派人中间表（替代 assigned_to TEXT 的查询功能，带索引与外键）
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS task_assignees (
+        task_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        PRIMARY KEY (task_id, user_id),
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    await addIndexIfNotExists(connection, 'task_assignees', 'idx_ta_user', 'user_id');
 
     await connection.query(`
       CREATE TABLE IF NOT EXISTS file_submissions (
@@ -128,6 +162,23 @@ async function initDatabase() {
       )
     `);
 
+    // 为既有表补充索引（已存在则跳过，兼容老库升级）
+    await addIndexIfNotExists(connection, 'tasks', 'idx_tasks_year', 'year');
+    await addIndexIfNotExists(connection, 'tasks', 'idx_tasks_status', 'status');
+    await addIndexIfNotExists(connection, 'tasks', 'idx_tasks_is_regular', 'is_regular');
+    await addIndexIfNotExists(connection, 'tasks', 'idx_tasks_department', 'department_id');
+    await addIndexIfNotExists(connection, 'users', 'idx_users_role', 'role');
+    await addIndexIfNotExists(connection, 'file_submissions', 'idx_fs_task', 'task_id');
+    await addIndexIfNotExists(connection, 'file_submissions', 'idx_fs_submitted_by', 'submitted_by');
+    await addIndexIfNotExists(connection, 'file_submissions', 'idx_fs_department', 'department_id');
+    await addIndexIfNotExists(connection, 'file_submissions', 'idx_fs_status', 'status');
+    await addIndexIfNotExists(connection, 'file_submissions', 'idx_fs_submitted_at', 'submitted_at');
+    await addIndexIfNotExists(connection, 'summary_files', 'idx_sf_task', 'task_id');
+    await addIndexIfNotExists(connection, 'summary_files', 'idx_sf_department', 'department_id');
+    await addIndexIfNotExists(connection, 'summary_files', 'idx_sf_uploaded_at', 'uploaded_at');
+    await addIndexIfNotExists(connection, 'notifications', 'idx_notif_user_read_created', 'target_user, is_read, created_at');
+    await addIndexIfNotExists(connection, 'audit_logs', 'idx_audit_target', 'target_type, target_id');
+
     const [deptRows] = await connection.query('SELECT COUNT(*) as count FROM departments');
     if (deptRows[0].count === 0) {
       const departments = [
@@ -174,6 +225,7 @@ async function initDatabase() {
       }
 
       console.log('默认部门和用户已创建');
+      console.warn('⚠️  默认账号密码均为弱口令 123456，请尽快登录后修改密码（新密码需同时包含字母和数字）！');
     }
 
     console.log('数据库初始化完成！');

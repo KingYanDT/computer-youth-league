@@ -5,9 +5,11 @@ $releaseRoot = Join-Path $root 'release'
 $portable = Join-Path $releaseRoot 'youth-league-office-portable'
 $zipPath = Join-Path $releaseRoot 'youth-league-office-portable.zip'
 
+# 路径穿越校验：规范化后用目录分隔符后缀比较，避免 StartsWith 误判
+# 例如 root="C:\proj" 不应放行 "C:\project-evil"
 function Assert-UnderRoot($path) {
-    $full = [System.IO.Path]::GetFullPath($path)
-    $rootFull = [System.IO.Path]::GetFullPath($root)
+    $full = [System.IO.Path]::GetFullPath($path.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar)
+    $rootFull = [System.IO.Path]::GetFullPath($root.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar)
     if (-not $full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to operate outside workspace: $full"
     }
@@ -26,8 +28,8 @@ if (Test-Path $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
 
-New-Item -ItemType Directory -Force -Path $portable | Out-Null
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $portable | Out-Null
 
 $dirs = @(
     'backend',
@@ -45,7 +47,6 @@ $files = @(
     'YouthLeagueLauncher.exe',
     'package.json',
     'package-lock.json',
-    'index.html',
     '系统架构.md'
 )
 
@@ -84,7 +85,9 @@ JWT_SECRET=$jwtSecret
 CORS_ORIGIN=http://localhost:3000
 MAX_FILE_SIZE=10485760
 "@
-Set-Content -LiteralPath (Join-Path $portable '.env') -Value $envContent -Encoding UTF8
+# 显式使用不带 BOM 的 UTF8 编码，避免 .env 首行被解析为带 BOM 的 key
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText((Join-Path $portable '.env'), $envContent, $utf8NoBom)
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'PORTABLE_README.txt') -Destination (Join-Path $portable 'README.txt') -Force
 

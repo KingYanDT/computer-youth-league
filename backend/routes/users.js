@@ -5,7 +5,19 @@ const { v4: uuidv4 } = require('uuid');
 const pool = require('../config/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const auditLog = require('../utils/auditLog');
+const { parsePagination, paginateResponse } = require('../utils/pagination');
 const VALID_ROLES = ['secretary', 'viceSecretary', 'minister', 'viceMinister', 'member', 'branchSecretary'];
+
+// 密码强度校验：至少 6 位，必须同时包含字母和数字
+function validatePassword(pwd) {
+  if (!pwd || typeof pwd !== 'string' || pwd.length < 6) {
+    return '密码至少 6 个字符';
+  }
+  if (!/[a-zA-Z]/.test(pwd) || !/\d/.test(pwd)) {
+    return '密码必须同时包含字母和数字';
+  }
+  return null;
+}
 
 router.get('/assignees', authenticateToken, async (req, res) => {
   try {
@@ -19,8 +31,14 @@ router.get('/assignees', authenticateToken, async (req, res) => {
 
 router.get('/', authenticateToken, requireRole('secretary'), async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id, name, username, role, department_id, created_at FROM users ORDER BY created_at DESC');
-    res.json({ users: rows });
+    const pager = parsePagination(req.query, { defaultPageSize: 50 });
+    const [countRows] = await pool.query('SELECT COUNT(*) as total FROM users');
+    const total = countRows[0].total;
+    const [rows] = await pool.query(
+      'SELECT id, name, username, role, department_id, created_at FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?',
+      [pager.pageSize, pager.offset]
+    );
+    res.json({ users: rows, ...paginateResponse(rows, total, pager) });
   } catch (err) {
     console.error('获取用户列表错误：', err);
     res.status(500).json({ error: '服务器错误' });
@@ -37,6 +55,11 @@ router.post('/', authenticateToken, requireRole('secretary'), async (req, res) =
 
     if (!VALID_ROLES.includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const pwdErr = validatePassword(password);
+    if (pwdErr) {
+      return res.status(400).json({ error: pwdErr });
     }
 
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
@@ -145,7 +168,14 @@ router.put('/:id/department', authenticateToken, requireRole('secretary'), async
     const { department_id } = req.body;
     const userId = req.params.id;
 
-    await pool.query('UPDATE users SET department_id = ? WHERE id = ?', [department_id || null, userId]);
+    // 递增 token_version 使旧 token 失效，避免改部门后仍带旧部门权限
+    const [result] = await pool.query(
+      'UPDATE users SET department_id = ?, token_version = token_version + 1 WHERE id = ?',
+      [department_id || null, userId]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
 
     await auditLog({
       user_id: req.user.id,

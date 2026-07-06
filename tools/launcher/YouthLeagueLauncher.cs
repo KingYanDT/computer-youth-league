@@ -59,7 +59,7 @@ internal static class YouthLeagueLauncher
             return 1;
         }
 
-        if (!StartPortableDatabase(projectRoot))
+        if (!StartPortableDatabase(projectRoot, nodePath))
         {
             return 1;
         }
@@ -153,7 +153,7 @@ internal static class YouthLeagueLauncher
         }
     }
 
-    private static bool StartPortableDatabase(string projectRoot)
+    private static bool StartPortableDatabase(string projectRoot, string nodePath)
     {
         string mysqlRoot = Path.Combine(projectRoot, "mysql");
         string mysqldPath = Path.Combine(mysqlRoot, "bin", "mysqld.exe");
@@ -175,7 +175,7 @@ internal static class YouthLeagueLauncher
         }
 
         projectRootForShutdown = projectRoot;
-        nodePathForShutdown = FindNodeExecutable(projectRoot);
+        nodePathForShutdown = nodePath;
         dbPortForShutdown = dbPort;
         dbPasswordForShutdown = dbPassword;
         Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e)

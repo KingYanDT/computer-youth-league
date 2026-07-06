@@ -1,44 +1,19 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const multer = require('multer');
 const pool = require('../config/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const auditLog = require('../utils/auditLog');
 const { normalizeOriginalName } = require('../utils/fileName');
 const { getAssignedUsers } = require('../utils/assignment');
+const { withTransaction } = require('../utils/db');
+const { parsePagination, paginateResponse } = require('../utils/pagination');
+const upload = require('../utils/upload');
 
-const ALLOWED_EXTENSIONS = /\.(doc|docx|pdf|xls|xlsx|ppt|pptx|txt|csv|jpg|jpeg|png|gif|zip|rar)$/i;
 const COMMITTEE_ROLES = ['secretary', 'viceSecretary'];
 const DEPARTMENT_REVIEW_ROLES = ['minister', 'viceMinister'];
 const DEPARTMENT_VIEW_ROLES = ['minister', 'viceMinister', 'member'];
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '..', '..', 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${uuidv4()}${ext}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 10485760 },
-  fileFilter: (req, file, cb) => {
-    if (!ALLOWED_EXTENSIONS.test(path.extname(file.originalname))) {
-      return cb(new Error('Unsupported file type'));
-    }
-    cb(null, true);
-  }
-});
 
 function isCommittee(user) {
   return COMMITTEE_ROLES.includes(user.role);
@@ -72,6 +47,7 @@ function applyVisibilityFilter(query, params, user) {
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const { task_id, taskId, status } = req.query;
+    const pager = parsePagination(req.query, { defaultPageSize: 50 });
     let query = `
       SELECT fs.*, t.title as task_title, d.name as department_name
       FROM file_submissions fs
@@ -93,10 +69,16 @@ router.get('/', authenticateToken, async (req, res) => {
     }
 
     query = applyVisibilityFilter(query, params, req.user);
-    query += ' ORDER BY fs.submitted_at DESC';
+
+    const countQuery = `SELECT COUNT(*) as total FROM (${query}) c`;
+    const [countRows] = await pool.query(countQuery, params);
+    const total = countRows[0].total;
+
+    query += ' ORDER BY fs.submitted_at DESC LIMIT ? OFFSET ?';
+    params.push(pager.pageSize, pager.offset);
 
     const [rows] = await pool.query(query, params);
-    res.json({ files: rows });
+    res.json({ files: rows, ...paginateResponse(rows, total, pager) });
   } catch (err) {
     console.error('Get files error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -119,7 +101,7 @@ router.post('/', authenticateToken, requireRole('branchSecretary'), upload.singl
       return res.status(404).json({ error: 'Task not found' });
     }
 
-    const assignedUsers = await getAssignedUsers(pool, taskRows[0].assigned_to);
+    const assignedUsers = await getAssignedUsers(pool, taskRows[0].assigned_to, taskId);
     if (!assignedUsers.some(user => user.id === req.user.id)) {
       return res.status(403).json({ error: 'This task is not assigned to you' });
     }
@@ -127,34 +109,38 @@ router.post('/', authenticateToken, requireRole('branchSecretary'), upload.singl
     const id = uuidv4();
     const departmentId = taskRows[0].department_id || req.user.department_id;
     const originalName = normalizeOriginalName(req.file.originalname);
-    await pool.query(
-      'INSERT INTO file_submissions (id, task_id, file_name, file_path, file_size, submitted_by, submitted_by_name, department_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        id, taskId, originalName, req.file.path, req.file.size,
-        req.user.id, req.user.name, departmentId, 'pending'
-      ]
-    );
 
-    if (taskRows[0].department_id) {
-      const [leaders] = await pool.query(
-        'SELECT id FROM users WHERE department_id = ? AND role IN (?, ?)',
-        [taskRows[0].department_id, 'minister', 'viceMinister']
+    // 事务：插入文件 + 通知部门负责人 + 通知书记
+    await withTransaction(async (conn) => {
+      await conn.query(
+        'INSERT INTO file_submissions (id, task_id, file_name, file_path, file_size, submitted_by, submitted_by_name, department_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          id, taskId, originalName, req.file.path, req.file.size,
+          req.user.id, req.user.name, departmentId, 'pending'
+        ]
       );
-      for (const leader of leaders) {
-        await pool.query(
+
+      if (taskRows[0].department_id) {
+        const [leaders] = await conn.query(
+          'SELECT id FROM users WHERE department_id = ? AND role IN (?, ?)',
+          [taskRows[0].department_id, 'minister', 'viceMinister']
+        );
+        for (const leader of leaders) {
+          await conn.query(
+            'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
+            [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, leader.id]
+          );
+        }
+      }
+
+      const [secretaries] = await conn.query("SELECT id FROM users WHERE role IN ('secretary', 'viceSecretary')");
+      for (const sec of secretaries) {
+        await conn.query(
           'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-          [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, leader.id]
+          [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, sec.id]
         );
       }
-    }
-
-    const [secretaries] = await pool.query("SELECT id FROM users WHERE role IN ('secretary', 'viceSecretary')");
-    for (const sec of secretaries) {
-      await pool.query(
-        'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', 'New file submitted', `${req.user.name} submitted ${originalName}`, sec.id]
-      );
-    }
+    });
 
     await auditLog({
       user_id: req.user.id,
@@ -216,14 +202,16 @@ router.put('/:id/approve', authenticateToken, requireRole('secretary', 'viceSecr
       return res.status(403).json({ error: 'No permission to approve this file' });
     }
 
-    await pool.query('UPDATE file_submissions SET status = ? WHERE id = ?', ['approved', fileId]);
+    await withTransaction(async (conn) => {
+      await conn.query('UPDATE file_submissions SET status = ? WHERE id = ?', ['approved', fileId]);
 
-    if (file.submitted_by) {
-      await pool.query(
-        'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', 'File approved', `Your file "${file.file_name}" was approved`, file.submitted_by]
-      );
-    }
+      if (file.submitted_by) {
+        await conn.query(
+          'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
+          [uuidv4(), 'file', 'File approved', `Your file "${file.file_name}" was approved`, file.submitted_by]
+        );
+      }
+    });
 
     await auditLog({
       user_id: req.user.id,
@@ -254,17 +242,19 @@ router.put('/:id/return', authenticateToken, requireRole('secretary', 'viceSecre
       return res.status(403).json({ error: 'No permission to return this file' });
     }
 
-    await pool.query(
-      'UPDATE file_submissions SET status = ?, returned_by = ?, returned_at = NOW(), return_reason = ? WHERE id = ?',
-      ['returned', req.user.id, returnReason || null, fileId]
-    );
-
-    if (file.submitted_by) {
-      await pool.query(
-        'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), 'file', 'File returned', `Your file "${file.file_name}" was returned. Reason: ${returnReason || 'None'}`, file.submitted_by]
+    await withTransaction(async (conn) => {
+      await conn.query(
+        'UPDATE file_submissions SET status = ?, returned_by = ?, returned_at = NOW(), return_reason = ? WHERE id = ?',
+        ['returned', req.user.id, returnReason || null, fileId]
       );
-    }
+
+      if (file.submitted_by) {
+        await conn.query(
+          'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
+          [uuidv4(), 'file', 'File returned', `Your file "${file.file_name}" was returned. Reason: ${returnReason || 'None'}`, file.submitted_by]
+        );
+      }
+    });
 
     await auditLog({
       user_id: req.user.id,
@@ -300,26 +290,37 @@ router.put('/:id/resubmit', authenticateToken, requireRole('branchSecretary'), u
     }
 
     const originalName = normalizeOriginalName(req.file.originalname);
-    await pool.query(
-      `UPDATE file_submissions
-       SET file_name = ?, file_path = ?, file_size = ?, status = ?, returned_by = NULL,
-           returned_at = NULL, return_reason = NULL, submitted_at = NOW()
-       WHERE id = ?`,
-      [originalName, req.file.path, req.file.size, 'pending', fileId]
-    );
+    const oldFilePath = file.file_path;
 
-    const [taskRows] = await pool.query('SELECT title, department_id FROM tasks WHERE id = ?', [file.task_id]);
-    if (taskRows.length > 0 && taskRows[0].department_id) {
-      const [leaders] = await pool.query(
-        'SELECT id FROM users WHERE department_id = ? AND role IN (?, ?)',
-        [taskRows[0].department_id, 'minister', 'viceMinister']
+    await withTransaction(async (conn) => {
+      await conn.query(
+        `UPDATE file_submissions
+         SET file_name = ?, file_path = ?, file_size = ?, status = ?, returned_by = NULL,
+             returned_at = NULL, return_reason = NULL, submitted_at = NOW()
+         WHERE id = ?`,
+        [originalName, req.file.path, req.file.size, 'pending', fileId]
       );
-      for (const leader of leaders) {
-        await pool.query(
-          'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
-          [uuidv4(), 'file', 'File resubmitted', `${req.user.name} resubmitted a file for "${taskRows[0].title}"`, leader.id]
+
+      const [taskRows] = await conn.query('SELECT title, department_id FROM tasks WHERE id = ?', [file.task_id]);
+      if (taskRows.length > 0 && taskRows[0].department_id) {
+        const [leaders] = await conn.query(
+          'SELECT id FROM users WHERE department_id = ? AND role IN (?, ?)',
+          [taskRows[0].department_id, 'minister', 'viceMinister']
         );
+        for (const leader of leaders) {
+          await conn.query(
+            'INSERT INTO notifications (id, type, title, message, target_user) VALUES (?, ?, ?, ?, ?)',
+            [uuidv4(), 'file', 'File resubmitted', `${req.user.name} resubmitted a file for "${taskRows[0].title}"`, leader.id]
+          );
+        }
       }
+    });
+
+    // 事务提交成功后删除旧文件，避免磁盘文件堆积
+    if (oldFilePath && oldFilePath !== req.file.path && fs.existsSync(oldFilePath)) {
+      fs.unlink(oldFilePath, (err) => {
+        if (err) console.error('Failed to delete old file:', oldFilePath, err);
+      });
     }
 
     await auditLog({

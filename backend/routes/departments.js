@@ -22,10 +22,10 @@ router.get('/', authenticateToken, async (req, res) => {
 
 router.post('/', authenticateToken, requireRole('secretary'), async (req, res) => {
   try {
-    const { name, color, minister_id, member_id } = req.body;
+    const { name, color, minister_id } = req.body;
 
     const id = uuidv4();
-    await pool.query('INSERT INTO departments (id, name, color, minister_id, member_id) VALUES (?, ?, ?, ?, ?)', [id, name, color || '#1890ff', minister_id || null, member_id || null]);
+    await pool.query('INSERT INTO departments (id, name, color, minister_id) VALUES (?, ?, ?, ?)', [id, name, color || '#1890ff', minister_id || null]);
 
     await auditLog({
       user_id: req.user.id,
@@ -45,12 +45,12 @@ router.post('/', authenticateToken, requireRole('secretary'), async (req, res) =
 
 router.put('/:id', authenticateToken, requireRole('secretary'), async (req, res) => {
   try {
-    const { name, color, minister_id, member_id } = req.body;
+    const { name, color, minister_id } = req.body;
     const deptId = req.params.id;
 
     await pool.query(
-      'UPDATE departments SET name = ?, color = ?, minister_id = ?, member_id = ? WHERE id = ?',
-      [name, color, minister_id || null, member_id || null, deptId]
+      'UPDATE departments SET name = ?, color = ?, minister_id = ? WHERE id = ?',
+      [name, color, minister_id || null, deptId]
     );
 
     await auditLog({
@@ -58,7 +58,7 @@ router.put('/:id', authenticateToken, requireRole('secretary'), async (req, res)
       action: 'update_department',
       target_type: 'department',
       target_id: deptId,
-      details: { name, color, minister_id, member_id },
+      details: { name, color, minister_id },
       ip_address: req.ip
     });
 

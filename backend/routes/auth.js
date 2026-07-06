@@ -12,6 +12,17 @@ const loginLimiter = rateLimit({
   message: { error: '登录尝试过多，请15分钟后再试' }
 });
 
+// 密码强度校验：至少 6 位，必须同时包含字母和数字
+function validatePassword(pwd) {
+  if (!pwd || typeof pwd !== 'string' || pwd.length < 6) {
+    return '密码至少 6 个字符';
+  }
+  if (!/[a-zA-Z]/.test(pwd) || !/\d/.test(pwd)) {
+    return '密码必须同时包含字母和数字';
+  }
+  return null;
+}
+
 router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -81,7 +92,10 @@ router.post('/logout', async (req, res) => {
     const token = req.cookies?.token;
     if (token) {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        // ignoreExpiration: 即使 token 已过期也能拿到 user id 来失效它
+        const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+        // 递增 token_version，使该用户所有旧 token 立即失效（含其他设备的会话）
+        await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [decoded.id]);
         await auditLog({
           user_id: decoded.id,
           action: 'logout',
@@ -94,6 +108,7 @@ router.post('/logout', async (req, res) => {
     res.clearCookie('token');
     res.json({ message: '已退出登录' });
   } catch (err) {
+    res.clearCookie('token');
     res.status(500).json({ error: '服务器错误' });
   }
 });
@@ -146,6 +161,16 @@ router.post('/change-password', async (req, res) => {
 
     if (!oldPassword || !newPassword) {
       return res.status(400).json({ error: '请输入旧密码和新密码' });
+    }
+
+    const pwdErr = validatePassword(newPassword);
+    if (pwdErr) {
+      return res.status(400).json({ error: pwdErr });
+    }
+
+    // 新密码不能与旧密码相同
+    if (oldPassword === newPassword) {
+      return res.status(400).json({ error: '新密码不能与旧密码相同' });
     }
 
     const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [decoded.id]);

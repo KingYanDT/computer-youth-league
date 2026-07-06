@@ -2,11 +2,40 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.log
+
+# 环境变量（含变体，防止凭据泄露）
 .env
-uploads/
-logs/
+.env.local
+.env.*.local
+.env.production
+.env.staging
+
+# 上传与日志目录（保留 .gitkeep 占位符）
+uploads/*
+!uploads/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# 构建产物
+release/
+runtime/
+YouthLeagueLauncher.exe
+
+# 内部工具与依赖
 github-prototype/
 mysql/
 tools/nodejs/
-runtime/
-release/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# 系统临时与备份文件
+*.bak
+*.tmp
+*~
+*.pid
+*.pid.lock
